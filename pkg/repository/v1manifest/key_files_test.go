@@ -26,7 +26,9 @@ import (
 func TestSavePrivateKeyCreationAndNoOverwrite(t *testing.T) {
 	key, err := GenKeyInfo()
 	require.NoError(t, err)
-	dir := filepath.Join(t.TempDir(), "private")
+	parent := t.TempDir()
+	require.NoError(t, os.Chmod(parent, 0755))
+	dir := filepath.Join(parent, "private")
 	name, err := SaveKeyInfo(key, "test", dir)
 	require.NoError(t, err)
 	info, err := os.Stat(name)

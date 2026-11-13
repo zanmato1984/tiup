@@ -32,7 +32,6 @@ import (
 	"github.com/pingcap/tiup/pkg/crypto"
 	"github.com/pingcap/tiup/pkg/repository/keydir"
 	"github.com/pingcap/tiup/pkg/set"
-	"github.com/pingcap/tiup/pkg/utils"
 )
 
 // ErrorInsufficientKeys indicates that the key number is less than threshold
@@ -133,10 +132,10 @@ func SaveKeyInfo(key *KeyInfo, ty, dir string) (string, error) {
 	if filepath.Base(ty) != ty || ty == "." || ty == ".." || strings.ContainsAny(ty, `/\`) {
 		return "", errors.New("key file name must not contain a directory")
 	}
-	if utils.IsNotExist(dir) {
-		if err := utils.MkdirAll(dir, dirMode); err != nil {
-			return "", errors.Annotate(err, "create key directory")
-		}
+	// utils.MkdirAll inherits broader parent permissions; private directories
+	// must use the requested mode even underneath a public (0755) parent.
+	if err := os.MkdirAll(dir, dirMode); err != nil {
+		return "", errors.Annotate(err, "create key directory")
 	}
 
 	pubPath := path.Join(dir, fmt.Sprintf("%s-%s.json", id[:ShortKeyIDLength], ty))
