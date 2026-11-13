@@ -38,11 +38,17 @@ func TestResolvePrivateLayout(t *testing.T) {
 	require.Equal(t, resolved, throughAlias)
 	link := filepath.Join(parent, "link")
 	require.NoError(t, os.Symlink(root, link))
+	outsideLink := filepath.Join(root, "outside")
+	require.NoError(t, os.Symlink(t.TempDir(), outsideLink))
 	for _, private := range []string{root, filepath.Join(root, "keys"), filepath.Join(root, "missing", "keys"), parent, filepath.Join(link, "not-created", "keys")} {
 		t.Run(private, func(t *testing.T) {
 			_, err := Resolve(root, private)
 			require.ErrorContains(t, err, "must be outside")
 		})
+	}
+	for _, mirror := range []string{root, alias} {
+		_, err := Resolve(mirror, filepath.Join(outsideLink, "new-private"))
+		require.ErrorContains(t, err, "must be outside", "public symlink paths must not select external private stores")
 	}
 	dangling := filepath.Join(parent, "dangling")
 	require.NoError(t, os.Symlink(filepath.Join(root, "missing"), dangling))

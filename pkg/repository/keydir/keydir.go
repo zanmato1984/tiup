@@ -25,7 +25,11 @@ import (
 // Resolve returns an absolute private directory separate from the public mirror.
 // The default is a sibling named <mirror>.keys, never a child of the mirror.
 func Resolve(mirror, configured string) (string, error) {
-	root, err := canonical(mirror)
+	localRoot, err := filepath.Abs(mirror)
+	if err != nil {
+		return "", err
+	}
+	root, err := canonical(localRoot)
 	if err != nil {
 		return "", err
 	}
@@ -39,8 +43,18 @@ func Resolve(mirror, configured string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	localPrivate, err := filepath.Abs(configured)
+	if err != nil {
+		return "", err
+	}
 	// Reserve case aliases too: deployment and upstream filesystems can differ.
-	for _, pair := range [][2]string{{root, private}, {private, root}} {
+	// Check the configured spelling as well as its target: a public in-root
+	// symlink to an external key store is still exposed by other file servers.
+	for _, pair := range [][2]string{
+		{root, private}, {private, root},
+		{localRoot, localPrivate}, {localPrivate, localRoot},
+		{root, localPrivate}, {localPrivate, root},
+	} {
 		rel, err := filepath.Rel(strings.ToLower(pair[0]), strings.ToLower(pair[1]))
 		overlap := err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 		// Lexical checks alone miss aliases such as APFS Unicode normalization.
@@ -65,7 +79,7 @@ func Resolve(mirror, configured string) (string, error) {
 			}
 		}
 		if overlap {
-			return "", fmt.Errorf("private key directory %q must be outside, and must not contain, public mirror %q", private, root)
+			return "", fmt.Errorf("private key directory %q (resolved to %q) must be outside, and must not contain, public mirror %q", configured, private, root)
 		}
 	}
 	return private, nil
