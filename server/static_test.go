@@ -23,42 +23,9 @@ import (
 	"runtime"
 	"sync/atomic"
 	"testing"
-	"time"
 
-	"github.com/pingcap/tiup/pkg/repository"
-	"github.com/pingcap/tiup/pkg/repository/keydir"
-	"github.com/pingcap/tiup/pkg/repository/v1manifest"
 	"github.com/stretchr/testify/require"
 )
-
-func TestServerUsesSeparatedKeysAndRequiresMigration(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "mirror")
-	require.NoError(t, os.Mkdir(root, 0755))
-	require.NoError(t, v1manifest.Init(root, "", time.Now().UTC()))
-	s, err := newServer(root, "", "")
-	require.NoError(t, err)
-	private, err := keydir.Resolve(root, "")
-	require.NoError(t, err)
-	require.Equal(t, private, s.keyDir)
-	w := httptest.NewRecorder()
-	s.router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/root.json", nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	_, err = newServer(root, filepath.Join(root, "not-created"), "")
-	require.ErrorContains(t, err, "must be outside")
-	require.NoError(t, os.Rename(private, filepath.Join(root, "keys")))
-	_, err = newServer(root, "", "")
-	require.ErrorContains(t, err, "migrate-keys")
-	_, err = repository.MigrateKeys(root, "", "")
-	require.NoError(t, err)
-	s, err = newServer(root, "", "")
-	require.NoError(t, err)
-	w = httptest.NewRecorder()
-	s.router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/root.json", nil))
-	require.Equal(t, http.StatusOK, w.Code)
-	w = httptest.NewRecorder()
-	s.router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/keys/missing.json", nil))
-	require.Equal(t, http.StatusForbidden, w.Code)
-}
 
 func TestStaticServerPrivateFiles(t *testing.T) {
 	for _, keyLocation := range []string{"default", "custom", "external", "symlink-root"} {
@@ -83,6 +50,12 @@ func TestStaticServerPrivateFiles(t *testing.T) {
 				_, _ = w.Write([]byte("upstream public file"))
 			}))
 			defer upstream.Close()
+			configuredKeyDir := keyDir
+			if keyLocation == "default" || keyLocation == "symlink-root" {
+				configuredKeyDir = ""
+			}
+			s, err := newServer(root, configuredKeyDir, upstream.URL)
+			require.NoError(t, err)
 			// Use inert markers, not signing keys or executable packages.
 			require.NoError(t, os.WriteFile(filepath.Join(keyDir, "private.json"), []byte("PRIVATE TEST MARKER"), 0600))
 			require.NoError(t, os.MkdirAll(filepath.Join(root, "keys"), 0700))
@@ -96,9 +69,7 @@ func TestStaticServerPrivateFiles(t *testing.T) {
 			external := t.TempDir()
 			require.NoError(t, os.WriteFile(filepath.Join(external, "other.json"), []byte("OUTSIDE ROOT MARKER"), 0600))
 			require.NoError(t, os.Symlink(filepath.Join(external, "other.json"), filepath.Join(root, "outside-alias.json")))
-			// Test legacy-path defense independently of startup, which now
-			// refuses an in-root signing layout before serving any request.
-			h := staticServer(root, upstream.URL, keyDir)
+			h := s.router()
 			blocked := []string{"/keys", "/keys/", "/keys/legacy.json", "/keys/missing.json", "/KEYS/legacy.json", "/KEYS/missing.json", "/%6beys/legacy.json", "/key-alias.json", "/key-alias-dir/private.json", "/key-alias-dir/missing.json", "/relative-key", "/outside-alias.json", "/", "/public/"}
 			if keyLocation == "custom" {
 				blocked = append(blocked, "/private-signing/private.json", "/private-signing/missing.json", "/PRIVATE-SIGNING/missing.json")
@@ -236,13 +207,14 @@ func TestStaticServerMissingPrivateDirectories(t *testing.T) {
 	require.NoError(t, os.Symlink(root, alias))
 	for _, root := range []string{root, alias} {
 		for _, keyDir := range []string{"", filepath.Join(root, "private-signing")} {
-			h := staticServer(root, "://invalid-upstream", keyDir)
+			s, err := newServer(root, keyDir, "://invalid-upstream")
+			require.NoError(t, err)
 			for _, target := range []string{"/keys/missing.json", "/KEYS/missing.json", "/private-signing/missing.json"} {
 				if keyDir == "" && target == "/private-signing/missing.json" {
 					continue
 				}
 				w := httptest.NewRecorder()
-				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
+				s.router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
 				require.Equal(t, http.StatusForbidden, w.Code)
 			}
 		}

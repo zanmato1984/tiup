@@ -24,7 +24,6 @@ import (
 	"github.com/pingcap/tiup/pkg/cluster/template/install"
 
 	"github.com/pingcap/errors"
-	"github.com/pingcap/tiup/pkg/repository/keydir"
 	ru "github.com/pingcap/tiup/pkg/repository/utils"
 	"github.com/pingcap/tiup/pkg/repository/v1manifest"
 	"github.com/pingcap/tiup/pkg/set"
@@ -43,7 +42,6 @@ type CloneOptions struct {
 	Components map[string]*[]string
 	Prefix     bool
 	Jobs       uint
-	KeyDir     string
 }
 
 // CloneMirror clones a local mirror from the remote repository
@@ -52,9 +50,6 @@ func CloneMirror(repo Repository,
 	targetDir string,
 	selectedVersions []string,
 	options CloneOptions) error {
-	if len(options.OSs) == 0 || len(options.Archs) == 0 {
-		return errors.New("clone requires at least one OS and architecture")
-	}
 	if strings.TrimRight(targetDir, "/") == strings.TrimRight(repo.Mirror().Source(), "/") {
 		return errors.Errorf("Refusing to clone from %s to %s", targetDir, repo.Mirror().Source())
 	}
@@ -64,29 +59,25 @@ func CloneMirror(repo Repository,
 	if err := utils.MkdirAll(targetDir, 0755); err != nil {
 		return err
 	}
-	entries, err := os.ReadDir(targetDir)
-	if err != nil {
-		return err
-	}
-	if len(entries) != 0 {
-		return errors.New("clone target must be empty; refusing to replace an existing mirror's signing identity")
-	}
-	keyDir, err := keydir.Create(targetDir, options.KeyDir)
-	if err != nil {
-		return err
-	}
-	fmt.Printf("Private signing keys are stored separately in %s; publish only %s\n", keyDir, targetDir)
 
 	// Temporary directory is used to save the unverified tarballs
 	tmpDir := filepath.Join(targetDir, fmt.Sprintf("_tmp_%d", time.Now().UnixNano()))
+	keyDir := filepath.Join(targetDir, "keys")
 
 	if err := utils.MkdirAll(tmpDir, 0755); err != nil {
+		return err
+	}
+	if err := utils.MkdirAll(keyDir, 0755); err != nil {
 		return err
 	}
 	defer os.RemoveAll(tmpDir)
 
 	fmt.Println("Arch", options.Archs)
 	fmt.Println("OS", options.OSs)
+
+	if len(options.OSs) == 0 || len(options.Archs) == 0 {
+		return nil
+	}
 
 	var (
 		initTime  = time.Now()

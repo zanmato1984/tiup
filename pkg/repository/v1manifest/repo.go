@@ -24,14 +24,13 @@ import (
 	"os"
 	"path"
 	"path/filepath"
-	"strings"
 	"time"
 
 	cjson "github.com/gibson042/canonicaljson-go"
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tiup/pkg/crypto"
-	"github.com/pingcap/tiup/pkg/repository/keydir"
 	"github.com/pingcap/tiup/pkg/set"
+	"github.com/pingcap/tiup/pkg/utils"
 )
 
 // ErrorInsufficientKeys indicates that the key number is less than threshold
@@ -39,10 +38,6 @@ var ErrorInsufficientKeys = stderrors.New("not enough keys supplied")
 
 // Init creates and initializes an empty reposityro
 func Init(dst, keyDir string, initTime time.Time) (err error) {
-	keyDir, err = keydir.Create(dst, keyDir)
-	if err != nil {
-		return err
-	}
 	// initial manifests
 	manifests := make(map[string]ValidManifest)
 	signedManifests := make(map[string]*Manifest)
@@ -124,27 +119,25 @@ func SaveKeyInfo(key *KeyInfo, ty, dir string) (string, error) {
 			return "", err
 		}
 	}
-	mode := os.FileMode(0644)
-	dirMode := os.FileMode(0755)
-	if key.IsPrivate() {
-		mode, dirMode = 0600, 0700
-	}
-	if filepath.Base(ty) != ty || ty == "." || ty == ".." || strings.ContainsAny(ty, `/\`) {
-		return "", errors.New("key file name must not contain a directory")
-	}
-	// utils.MkdirAll inherits broader parent permissions; private directories
-	// must use the requested mode even underneath a public (0755) parent.
-	if err := os.MkdirAll(dir, dirMode); err != nil {
-		return "", errors.Annotate(err, "create key directory")
+	if utils.IsNotExist(dir) {
+		if err := utils.MkdirAll(dir, 0755); err != nil {
+			return "", errors.Annotate(err, "create key directory")
+		}
 	}
 
 	pubPath := path.Join(dir, fmt.Sprintf("%s-%s.json", id[:ShortKeyIDLength], ty))
-	// Set private permissions at creation, with no truncate/symlink overwrite.
-	f, err := os.OpenFile(pubPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, mode)
+	f, err := os.Create(pubPath)
 	if err != nil {
 		return pubPath, err
 	}
 	defer f.Close()
+
+	if _, found := key.Value["private"]; found {
+		err = f.Chmod(0600)
+		if err != nil {
+			return pubPath, err
+		}
+	}
 
 	return pubPath, json.NewEncoder(f).Encode(key)
 }

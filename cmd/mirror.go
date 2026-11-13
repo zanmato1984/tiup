@@ -20,6 +20,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"runtime"
 	"sort"
@@ -31,7 +32,6 @@ import (
 	"github.com/pingcap/tiup/pkg/environment"
 	"github.com/pingcap/tiup/pkg/localdata"
 	"github.com/pingcap/tiup/pkg/repository"
-	"github.com/pingcap/tiup/pkg/repository/keydir"
 	"github.com/pingcap/tiup/pkg/repository/model"
 	ru "github.com/pingcap/tiup/pkg/repository/utils"
 	"github.com/pingcap/tiup/pkg/repository/v1manifest"
@@ -61,7 +61,6 @@ of components or the repository itself.`,
 
 	cmd.AddCommand(
 		newMirrorInitCmd(),
-		newMirrorMigrateKeysCmd(),
 		newMirrorSignCmd(),
 		newMirrorGenkeyCmd(),
 		newMirrorCloneCmd(),
@@ -75,7 +74,6 @@ of components or the repository itself.`,
 		newMirrorRotateCmd(),
 		newTransferOwnerCmd(),
 	)
-	cmd.PersistentFlags().String("key-dir", "", "Private signing-key directory outside the mirror (default: <mirror>.keys)")
 
 	return cmd
 }
@@ -738,13 +736,8 @@ func newMirrorGenkeyCmd() *cobra.Command {
 			env := environment.GlobalEnv()
 			privPath := env.Profile().Path(localdata.KeyInfoParentDir, name+".json")
 			keyDir := filepath.Dir(privPath)
-			if source := env.V1Repository().Mirror().Source(); !strings.HasPrefix(source, "http") {
-				if _, err := keydir.Resolve(source, keyDir); err != nil {
-					return perrs.Annotate(err, "TIUP_HOME must not place owner keys inside the public mirror")
-				}
-			}
 			if utils.IsNotExist(keyDir) {
-				if err := os.Mkdir(keyDir, 0700); err != nil {
+				if err := os.Mkdir(keyDir, 0755); err != nil {
 					return perrs.Annotate(err, "create private key dir")
 				}
 			}
@@ -781,11 +774,16 @@ func newMirrorGenkeyCmd() *cobra.Command {
 					return err
 				}
 
-				f, err := os.OpenFile(privPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
+				f, err := os.Create(privPath)
 				if err != nil {
 					return err
 				}
 				defer f.Close()
+
+				// set private key permission
+				if err = f.Chmod(0600); err != nil {
+					return err
+				}
 
 				if err := json.NewEncoder(f).Encode(ki); err != nil {
 					return err
@@ -850,22 +848,21 @@ If the path does not exist, a new directory will be created.`,
 				return perrs.Errorf("the target path '%s' is not an empty directory", repoPath)
 			}
 
+			if keyDir == "" {
+				keyDir = path.Join(repoPath, "keys")
+			}
 			return initRepo(repoPath, keyDir)
 		},
 	}
 
-	cmd.Flags().StringVarP(&keyDir, "key-dir", "k", "", "Private key directory outside the mirror (default: <mirror>.keys; must not exist)")
+	cmd.Flags().StringVarP(&keyDir, "key-dir", "k", "", "Path to write the private key files")
 
 	return cmd
 }
 
 func initRepo(path, keyDir string) error {
-	keyDir, err := keydir.Resolve(path, keyDir)
-	if err != nil {
-		return err
-	}
 	log.Infof("Initializing empty new repository at \"%s\", private keys will be stored in \"%s\"...", path, keyDir)
-	err = v1manifest.Init(path, keyDir, time.Now().UTC())
+	err := v1manifest.Init(path, keyDir, time.Now().UTC())
 	if err != nil {
 		log.Errorf("Initializing new repository failed.")
 		return err
@@ -998,10 +995,6 @@ func newMirrorCloneCmd() *cobra.Command {
 				versionList = append(versionList, v)
 			}
 
-			options.KeyDir, err = cmd.Flags().GetString("key-dir")
-			if err != nil {
-				return err
-			}
 			return repository.CloneMirror(repo, components, args[0], versionList, options)
 		},
 	}
