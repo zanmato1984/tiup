@@ -123,3 +123,25 @@ curl $TIUP_MIRRORS/install.sh | sh
 ```
 
 After importing the PATH variable, you can use TiUP normally (you need to keep the TIUP_MIRRORS variable pointing to a private image).
+
+### Serving a mirror with `tiup-server`
+
+Keep signing keys outside the public mirror directory and use `--key-dir` to
+point `tiup-server` at that separate, access-controlled directory. Do not upload
+keys, key backups or private-key copies to a CDN or another static file server.
+The HTTP protections in `tiup-server` do not apply to those other publishing paths.
+
+The static handler denies the mirror's default `keys` directory even when a
+different `--key-dir` is configured. Private path checks also deny case variants,
+including on case-sensitive filesystems. It also denies the configured key directory
+and its resolved location, symbolic links, directory listings and directory index
+pages. These denials do not fall back to an upstream mirror, including when the
+requested private file does not exist. Ordinary public files, range requests and
+upstream fallback for missing public files remain supported.
+
+Deployments using public symbolic links or directory indexes must publish regular
+files and use explicit file URLs instead. Existing keys are not moved by this
+change. Copies or hard links of private files placed elsewhere in the public
+directory are not detected: directory layout and publishing policy must prevent
+them. Blocking HTTP access does not revoke keys that were previously disclosed;
+handle those through the normal key-revocation and rotation procedure.
