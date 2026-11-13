@@ -79,14 +79,18 @@ the latest stable version will be downloaded from the repository.`,
 				return nil
 			}
 			switch cmd.Name() {
-			case "init", "rotate", "set":
+			case "init", "rotate", "set", "migrate-keys":
 				if cmd.HasParent() && cmd.Parent().Name() == "mirror" {
 					// skip environment init
 					break
 				}
 				fallthrough
 			default:
-				e, err := environment.InitEnv(repoOpts, repository.MirrorOptions{})
+				mirrorOptions := repository.MirrorOptions{}
+				if cmd.HasParent() && cmd.Parent().Name() == "mirror" && cmd.Name() != "clone" {
+					mirrorOptions.KeyDir, _ = cmd.Flags().GetString("key-dir")
+				}
+				e, err := environment.InitEnv(repoOpts, mirrorOptions)
 				if err != nil {
 					if errors.Is(perrs.Cause(err), v1manifest.ErrLoadManifest) {
 						log.Warnf("Please check for root manifest file, you may download one from the repository mirror, or try `tiup mirror set` to force reset it.")

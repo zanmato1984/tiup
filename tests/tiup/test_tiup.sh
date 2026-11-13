@@ -49,7 +49,8 @@ tar -C $CMP_TMP_DIR -czf $CMP_TMP_DIR/hello.tar.gz hello.sh
 
 tiup mirror genkey
 
-TEST_MIRROR_A=`mktemp -d`
+TEST_MIRROR_A=$TMP_DIR/mirror-a
+mkdir -p "$TEST_MIRROR_A"
 tiup mirror init $TEST_MIRROR_A
 tiup mirror set $TEST_MIRROR_A
 tiup mirror grant pingcap
@@ -58,7 +59,8 @@ echo "should fail"
 tiup mirror publish hello v0.0.1 $CMP_TMP_DIR/hello.tar.gz hello.sh
 tiup hello:v0.0.1 | grep TiDB
 
-TEST_MIRROR_B=`mktemp -d`
+TEST_MIRROR_B=$TMP_DIR/mirror-b
+mkdir -p "$TEST_MIRROR_B"
 tiup mirror init $TEST_MIRROR_B
 tiup mirror set $TEST_MIRROR_B
 tiup mirror grant pingcap

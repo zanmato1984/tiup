@@ -16,9 +16,9 @@ package main
 import (
 	"fmt"
 	"net/http"
-	"path/filepath"
 
 	"github.com/pingcap/tiup/pkg/repository"
+	"github.com/pingcap/tiup/pkg/repository/keydir"
 	"github.com/pingcap/tiup/server/session"
 )
 
@@ -31,8 +31,9 @@ type server struct {
 
 // NewServer returns a pointer to server
 func newServer(rootDir, keyDir, upstream string) (*server, error) {
-	if keyDir == "" {
-		keyDir = filepath.Join(rootDir, "keys")
+	keyDir, err := keydir.Resolve(rootDir, keyDir)
+	if err != nil {
+		return nil, err
 	}
 	mirror := repository.NewMirror(rootDir, repository.MirrorOptions{Upstream: upstream, KeyDir: keyDir})
 	if err := mirror.Open(); err != nil {

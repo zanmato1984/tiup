@@ -24,7 +24,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -35,6 +34,7 @@ import (
 	"github.com/pingcap/errors"
 	"github.com/pingcap/tiup/pkg/crypto/rand"
 	logprinter "github.com/pingcap/tiup/pkg/logger/printer"
+	"github.com/pingcap/tiup/pkg/repository/keydir"
 	"github.com/pingcap/tiup/pkg/repository/model"
 	"github.com/pingcap/tiup/pkg/repository/store"
 	"github.com/pingcap/tiup/pkg/repository/v1manifest"
@@ -152,11 +152,17 @@ func (l *localFilesystem) Open() error {
 		return errors.Errorf("local system mirror `%s` should be a directory", l.rootPath)
 	}
 
-	if l.keyDir == "" {
-		l.keyDir = path.Join(l.rootPath, "keys")
+	if err := keydir.CheckLegacy(l.rootPath); err != nil {
+		return err
 	}
-	if utils.IsNotExist(l.keyDir) {
+	l.keyDir, err = keydir.Resolve(l.rootPath, l.keyDir)
+	if err != nil {
+		return err
+	}
+	if err := keydir.CheckPermissions(l.keyDir); os.IsNotExist(err) {
 		return nil
+	} else if err != nil {
+		return err
 	}
 	return l.loadKeys()
 }
@@ -169,7 +175,13 @@ func (l *localFilesystem) loadKeys() error {
 			return err
 		}
 		if info.IsDir() {
+			if info.Mode().Perm()&0077 != 0 {
+				return errors.Errorf("private key directory %q must have owner-only permissions (0700)", path)
+			}
 			return nil
+		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0077 != 0 {
+			return errors.Errorf("private key file %q must be a regular owner-only file (0600)", path)
 		}
 		f, err := os.Open(path)
 		if err != nil {
@@ -180,6 +192,9 @@ func (l *localFilesystem) loadKeys() error {
 		ki := v1manifest.KeyInfo{}
 		if err := json.NewDecoder(f).Decode(&ki); err != nil {
 			return errors.Annotate(err, "decode key")
+		}
+		if !ki.IsPrivate() {
+			return errors.Errorf("file %q does not contain a private signing key", path)
 		}
 
 		id, err := ki.ID()

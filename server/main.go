@@ -45,10 +45,11 @@ func main() {
 		},
 	}
 	cmd.Flags().StringVarP(&addr, "addr", "", addr, "addr to listen")
-	cmd.Flags().StringVarP(&keyDir, "key-dir", "", keyDir, "specify the directory where stores the private keys")
+	cmd.Flags().StringVarP(&keyDir, "key-dir", "", keyDir, "Private signing-key directory outside the mirror (default: <mirror>.keys)")
 	cmd.Flags().StringVarP(&upstream, "upstream", "", upstream, "specify the upstream mirror")
 
 	if err := cmd.Execute(); err != nil {
 		logprinter.Errorf("Execute command: %s", err.Error())
+		os.Exit(1)
 	}
 }
