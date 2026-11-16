@@ -15,12 +15,15 @@
 package main
 
 import (
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -61,6 +64,9 @@ func TestStaticServerPrivateFiles(t *testing.T) {
 			require.NoError(t, os.WriteFile(filepath.Join(root, "root.json"), []byte("public metadata"), 0600))
 			require.NoError(t, os.Mkdir(filepath.Join(root, "public"), 0700))
 			require.NoError(t, os.WriteFile(filepath.Join(root, "public", "component.tar.gz"), []byte("public archive"), 0600))
+			// Directory denial must also apply when an index page exists.
+			require.NoError(t, os.WriteFile(filepath.Join(root, "index.html"), []byte("root index"), 0600))
+			require.NoError(t, os.WriteFile(filepath.Join(root, "public", "index.html"), []byte("public index"), 0600))
 			require.NoError(t, os.Symlink(filepath.Join(keyDir, "private.json"), filepath.Join(root, "key-alias.json")))
 			require.NoError(t, os.Symlink(keyDir, filepath.Join(root, "key-alias-dir")))
 			require.NoError(t, os.Symlink(filepath.Join("keys", "legacy.json"), filepath.Join(root, "relative-key")))
@@ -157,5 +163,90 @@ func TestStaticServerMissingPrivateDirectories(t *testing.T) {
 				require.Equal(t, http.StatusForbidden, w.Code)
 			}
 		}
+	}
+}
+
+func TestStaticServerUnicodeKeyDirectoryAlias(t *testing.T) {
+	root := t.TempDir()
+	keyDir := filepath.Join(root, "caf\u00e9")
+	alias := "cafe\u0301"
+	require.NoError(t, os.Mkdir(keyDir, 0700))
+	privateInfo, err := os.Stat(keyDir)
+	require.NoError(t, err)
+	aliasInfo, err := os.Stat(filepath.Join(root, alias))
+	if os.IsNotExist(err) {
+		t.Skip("filesystem does not alias NFC and NFD directory names")
+	}
+	require.NoError(t, err)
+	require.True(t, os.SameFile(privateInfo, aliasInfo))
+
+	var upstreamRequests atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		upstreamRequests.Add(1)
+		_, _ = w.Write([]byte("upstream public file"))
+	}))
+	defer upstream.Close()
+	s, err := newServer(root, keyDir, upstream.URL)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(keyDir, "private.json"), []byte("PRIVATE TEST MARKER"), 0600))
+	h := s.router()
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		w := httptest.NewRecorder()
+		h.ServeHTTP(w, httptest.NewRequest(method, "/"+url.PathEscape(alias)+"/private.json", nil))
+		require.Equal(t, http.StatusForbidden, w.Code)
+		require.NotContains(t, w.Body.String(), "MARKER")
+		require.Zero(t, upstreamRequests.Load())
+	}
+}
+
+func TestStaticServerPrivatePathNormalization(t *testing.T) {
+	for _, keyName := range []string{"keys", "private-signing"} {
+		t.Run(keyName, func(t *testing.T) {
+			root := t.TempDir()
+			keyDir := filepath.Join(root, keyName)
+			require.NoError(t, os.Mkdir(keyDir, 0700))
+			require.NoError(t, os.Mkdir(filepath.Join(root, "public"), 0700))
+			var upstreamRequests atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamRequests.Add(1)
+				_, _ = w.Write([]byte("upstream public file"))
+			}))
+			defer upstream.Close()
+			configuredKeyDir := keyDir
+			if keyName == "keys" {
+				configuredKeyDir = ""
+			}
+			s, err := newServer(root, configuredKeyDir, upstream.URL)
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(keyDir, "private.json"), []byte("PRIVATE TEST MARKER"), 0600))
+			server := httptest.NewServer(s.router())
+			defer server.Close()
+			client := server.Client()
+			client.Timeout = 5 * time.Second
+			// Use a real client so mux canonicalization redirects are followed.
+			paths := []struct{ name, path string }{
+				{"dot-segment", "/public/../" + keyName + "/private.json"},
+				{"encoded-dot-segment", "/public/%2e%2e/" + keyName + "/private.json"},
+				{"encoded-parent-separator", "/public/..%2f" + keyName + "/private.json"},
+				{"encoded-key-separator", "/" + keyName + "%2fprivate.json"},
+				{"repeated-slashes", "//" + keyName + "//private.json"},
+			}
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				for _, target := range paths {
+					t.Run(method+"/"+target.name, func(t *testing.T) {
+						r, err := http.NewRequest(method, server.URL+target.path, nil)
+						require.NoError(t, err)
+						response, err := client.Do(r)
+						require.NoError(t, err)
+						body, err := io.ReadAll(response.Body)
+						require.NoError(t, response.Body.Close())
+						require.NoError(t, err)
+						require.Equal(t, http.StatusForbidden, response.StatusCode)
+						require.NotContains(t, string(body), "MARKER")
+						require.Zero(t, upstreamRequests.Load())
+					})
+				}
+			}
+		})
 	}
 }

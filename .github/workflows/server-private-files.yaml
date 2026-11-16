@@ -30,3 +30,18 @@ jobs:
         run: go test -race ./server/... ./pkg/repository/...
       - name: Existing layouts, signing and private HTTP denial
         run: make test_server_private_files
+
+  unicode-alias:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Require a non-skipped Unicode alias regression
+        run: |
+          go test -json -count=1 -run '^TestStaticServerUnicodeKeyDirectoryAlias$' ./server | tee unicode-alias.json
+          jq -e -s 'any(.[]; .Test == "TestStaticServerUnicodeKeyDirectoryAlias" and .Action == "pass")' unicode-alias.json
