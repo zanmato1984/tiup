@@ -42,7 +42,16 @@ jobs:
       - uses: actions/setup-go@v6
         with:
           go-version-file: go.mod
-      - name: Require a non-skipped Unicode alias regression
+      - name: Require non-skipped filesystem alias regressions
+        shell: bash
         run: |
-          go test -json -count=1 -run '^TestStaticServerUnicodeKeyDirectoryAlias$' ./server | tee unicode-alias.json
-          jq -e -s 'any(.[]; .Test == "TestStaticServerUnicodeKeyDirectoryAlias" and .Action == "pass")' unicode-alias.json
+          go test -json -count=1 ./server | tee unicode-alias.json
+          jq -e -s '
+            ["TestStaticServerUnicodeKeyDirectoryAlias",
+             "TestStaticServerSymlinkRootCaseAlias",
+             "TestStaticServerUnicodePrivateRoot/root",
+             "TestStaticServerUnicodePrivateRoot/ancestor",
+             "TestStaticServerUnicodePrivateRoot/combining-mark-order"] as $required |
+            [.[] | select(.Action == "pass") | .Test] as $passed |
+            ($required - $passed | length) == 0
+          ' unicode-alias.json

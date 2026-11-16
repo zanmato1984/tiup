@@ -250,3 +250,176 @@ func TestStaticServerPrivatePathNormalization(t *testing.T) {
 		})
 	}
 }
+
+func TestStaticServerUnavailableRoot(t *testing.T) {
+	for _, symlinkRoot := range []bool{false, true} {
+		for _, keyName := range []string{"keys", "private-signing"} {
+			realRoot := filepath.Join(t.TempDir(), "mirror")
+			require.NoError(t, os.Mkdir(realRoot, 0700))
+			root := realRoot
+			if symlinkRoot {
+				root = filepath.Join(t.TempDir(), "alias")
+				require.NoError(t, os.Symlink(realRoot, root))
+			}
+			var upstreamRequests atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamRequests.Add(1)
+				_, _ = w.Write([]byte("UPSTREAM MARKER"))
+			}))
+			t.Cleanup(upstream.Close)
+			s, err := newServer(root, filepath.Join(root, keyName), upstream.URL)
+			require.NoError(t, err)
+			h := s.router()
+			// The root becomes unavailable before requests, with no concurrent writer.
+			require.NoError(t, os.Rename(realRoot, realRoot+"-offline"))
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				for target, status := range map[string]int{
+					"/keys/private.json":            http.StatusForbidden,
+					"/" + keyName + "/private.json": http.StatusForbidden,
+					"/root.json":                    http.StatusInternalServerError,
+				} {
+					w := httptest.NewRecorder()
+					h.ServeHTTP(w, httptest.NewRequest(method, target, nil))
+					require.Equal(t, status, w.Code, "%s %s, symlink=%v", method, target, symlinkRoot)
+					require.NotContains(t, w.Body.String(), "MARKER")
+					require.Zero(t, upstreamRequests.Load())
+				}
+			}
+			require.NoError(t, os.Rename(realRoot+"-offline", realRoot))
+			w := httptest.NewRecorder()
+			h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing-public.json", nil))
+			require.Equal(t, http.StatusOK, w.Code)
+			require.Equal(t, "UPSTREAM MARKER", w.Body.String())
+			require.Equal(t, int32(1), upstreamRequests.Load())
+			upstream.Close()
+		}
+	}
+}
+
+func TestStaticServerMissingPrivateAliases(t *testing.T) {
+	for _, location := range []string{"unicode", "case-fold", "combining-mark-order", "symlink-parent", "dangling-parent"} {
+		t.Run(location, func(t *testing.T) {
+			root := t.TempDir()
+			keyDir := filepath.Join(root, "caf\u00e9")
+			aliases := []string{"caf\u00e9", "cafe\u0301", "CAFE\u0301"}
+			switch location {
+			case "case-fold":
+				keyDir = filepath.Join(root, "\u03c3")
+				aliases = []string{"\u03c3", "\u03c2", "\u03a3"}
+			case "combining-mark-order":
+				keyDir = filepath.Join(root, "\u1fb4")
+				aliases = []string{"\u1fb4", "\u03b1\u0345\u0301"}
+			case "symlink-parent", "dangling-parent":
+				parent := filepath.Join(t.TempDir(), "alias")
+				target := root
+				if location == "dangling-parent" {
+					target = filepath.Join(root, "not-created")
+				}
+				require.NoError(t, os.Symlink(target, parent))
+				keyDir = filepath.Join(parent, "nested", "private-signing")
+				aliases = []string{"nested/private-signing"}
+			}
+			var upstreamRequests atomic.Int32
+			upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				upstreamRequests.Add(1)
+				_, _ = w.Write([]byte("UPSTREAM MARKER"))
+			}))
+			defer upstream.Close()
+			s, err := newServer(root, keyDir, upstream.URL)
+			require.NoError(t, err)
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				for _, alias := range aliases {
+					target := "/" + url.PathEscape(alias) + "/private.json"
+					w := httptest.NewRecorder()
+					s.router().ServeHTTP(w, httptest.NewRequest(method, target, nil))
+					status := http.StatusForbidden
+					if location == "dangling-parent" {
+						status = http.StatusInternalServerError
+					}
+					require.Equal(t, status, w.Code, "%s %s", method, target)
+					require.NotContains(t, w.Body.String(), "MARKER")
+					require.Zero(t, upstreamRequests.Load())
+				}
+			}
+			w := httptest.NewRecorder()
+			s.router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing-public.json", nil))
+			if location == "dangling-parent" {
+				require.Equal(t, http.StatusInternalServerError, w.Code)
+				require.Zero(t, upstreamRequests.Load())
+			} else {
+				require.Equal(t, http.StatusOK, w.Code)
+				require.Equal(t, "UPSTREAM MARKER", w.Body.String())
+				require.Equal(t, int32(1), upstreamRequests.Load())
+			}
+		})
+	}
+}
+
+func TestStaticServerSymlinkRootCaseAlias(t *testing.T) {
+	realRoot := filepath.Join(t.TempDir(), "root")
+	require.NoError(t, os.Mkdir(realRoot, 0700))
+	parent := t.TempDir()
+	root := filepath.Join(parent, "mirror")
+	require.NoError(t, os.Symlink(realRoot, root))
+	keyDir := filepath.Join(parent, "MIRROR", "signing")
+	require.NoError(t, os.Mkdir(filepath.Join(realRoot, "signing"), 0700))
+	info, err := os.Stat(keyDir)
+	if os.IsNotExist(err) {
+		t.Skip("filesystem does not alias directory case variants")
+	}
+	require.NoError(t, err)
+	actual, err := os.Stat(filepath.Join(realRoot, "signing"))
+	require.NoError(t, err)
+	require.True(t, os.SameFile(info, actual))
+	s, err := newServer(root, keyDir, "")
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(keyDir, "private.json"), []byte("PRIVATE MARKER"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(realRoot, "root.json"), []byte("public metadata"), 0600))
+	for _, method := range []string{http.MethodGet, http.MethodHead} {
+		w := httptest.NewRecorder()
+		s.router().ServeHTTP(w, httptest.NewRequest(method, "/signing/private.json", nil))
+		require.Equal(t, http.StatusForbidden, w.Code)
+		require.NotContains(t, w.Body.String(), "MARKER")
+	}
+	w := httptest.NewRecorder()
+	s.router().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/root.json", nil))
+	require.Equal(t, http.StatusOK, w.Code)
+	require.Equal(t, "public metadata", w.Body.String())
+}
+
+func TestStaticServerUnicodePrivateRoot(t *testing.T) {
+	for _, layout := range []string{"root", "ancestor", "combining-mark-order"} {
+		t.Run(layout, func(t *testing.T) {
+			parent := t.TempDir()
+			private := filepath.Join(parent, "caf\u00e9")
+			keyDir := filepath.Join(parent, "cafe\u0301")
+			if layout == "combining-mark-order" {
+				private = filepath.Join(parent, "\u1fb4")
+				keyDir = filepath.Join(parent, "\u03b1\u0345\u0301")
+			}
+			require.NoError(t, os.Mkdir(private, 0700))
+			info, err := os.Stat(keyDir)
+			if os.IsNotExist(err) {
+				t.Skip("filesystem does not alias NFC and NFD directory names")
+			}
+			require.NoError(t, err)
+			actual, err := os.Stat(private)
+			require.NoError(t, err)
+			require.True(t, os.SameFile(info, actual))
+			root := private
+			if layout == "ancestor" {
+				root = filepath.Join(private, "mirror")
+				require.NoError(t, os.Mkdir(root, 0700))
+			}
+			s, err := newServer(root, keyDir, "")
+			require.NoError(t, err)
+			require.NoError(t, os.WriteFile(filepath.Join(root, "private.json"), []byte("PRIVATE MARKER"), 0600))
+			for _, method := range []string{http.MethodGet, http.MethodHead} {
+				w := httptest.NewRecorder()
+				s.router().ServeHTTP(w, httptest.NewRequest(method, "/private.json", nil))
+				require.Equal(t, http.StatusForbidden, w.Code)
+				require.NotContains(t, w.Body.String(), "MARKER")
+			}
+		})
+	}
+}
