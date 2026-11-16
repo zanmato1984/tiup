@@ -15,12 +15,10 @@
 package main
 
 import (
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sync/atomic"
 	"testing"
 
@@ -140,65 +138,6 @@ func TestStaticServerPublicHTTP(t *testing.T) {
 	w = httptest.NewRecorder()
 	h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/missing.json", nil))
 	require.Equal(t, http.StatusNotFound, w.Code)
-}
-
-// This stress test supplements the handle-identity checks; passing a stress
-// test (or Go's race detector) alone does not prove filesystem race safety.
-func TestStaticServerPathReplacement(t *testing.T) {
-	for _, directory := range []bool{false, true} {
-		t.Run(fmt.Sprintf("directory=%t", directory), func(t *testing.T) {
-			root := t.TempDir()
-			require.NoError(t, os.Mkdir(filepath.Join(root, "keys"), 0700))
-			require.NoError(t, os.WriteFile(filepath.Join(root, "keys", "file"), []byte("PRIVATE MARKER"), 0600))
-			public := filepath.Join(root, "public")
-			private := filepath.Join("keys", "file")
-			target := "/public"
-			if directory {
-				require.NoError(t, os.Mkdir(public, 0700))
-				require.NoError(t, os.WriteFile(filepath.Join(public, "file"), []byte("public file"), 0600))
-				private = "keys"
-				target += "/file"
-			} else {
-				require.NoError(t, os.WriteFile(public, []byte("public file"), 0600))
-			}
-			stop := make(chan struct{})
-			done := make(chan error, 1)
-			go func() {
-				for {
-					select {
-					case <-stop:
-						done <- nil
-						return
-					default:
-					}
-					for _, change := range []func() error{
-						func() error { return os.Rename(public, public+"-saved") },
-						func() error { return os.Symlink(private, public) },
-						func() error { runtime.Gosched(); return os.Remove(public) },
-						func() error { return os.Rename(public+"-saved", public) },
-					} {
-						if err := change(); err != nil {
-							done <- err
-							return
-						}
-					}
-				}
-			}()
-			defer func() {
-				close(stop)
-				require.NoError(t, <-done)
-			}()
-			h := staticServer(root, "")
-			for range 1000 {
-				w := httptest.NewRecorder()
-				h.ServeHTTP(w, httptest.NewRequest(http.MethodGet, target, nil))
-				require.NotContains(t, w.Body.String(), "PRIVATE MARKER")
-				if w.Code == http.StatusOK {
-					require.Equal(t, "public file", w.Body.String())
-				}
-			}
-		})
-	}
 }
 
 func TestStaticServerMissingPrivateDirectories(t *testing.T) {

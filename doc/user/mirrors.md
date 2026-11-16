@@ -149,6 +149,10 @@ pages. These denials do not fall back to an upstream mirror, including when the
 requested private file does not exist. Ordinary public files, range requests and
 upstream fallback for missing public files remain supported.
 
+The mirror tree must be managed by trusted writers. These static-access checks
+do not defend against a local process maliciously replacing paths while requests
+are being handled.
+
 Deployments using public symbolic links or directory indexes must publish regular
 files and use explicit file URLs instead. Existing keys are not moved by this
 change. Copies or hard links of private files placed elsewhere in the public

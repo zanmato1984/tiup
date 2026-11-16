@@ -75,14 +75,18 @@ func (fs mirrorFileSystem) Open(name string) (http.File, error) {
 			return nil, err
 		}
 	}
-	current, err := os.OpenRoot(root)
+	directory, err := os.OpenRoot(root)
 	if err != nil {
 		return nil, err
 	}
-	defer func() { _ = current.Close() }()
+	defer func() { _ = directory.Close() }()
+	// Mirror entries are managed by trusted writers. Reject static aliases here;
+	// this policy does not synchronize with concurrent path replacement.
+	current := ""
 	parts := strings.Split(relative, string(filepath.Separator))
 	for i, part := range parts {
-		info, err := current.Lstat(part)
+		current = filepath.Join(current, part)
+		info, err := directory.Lstat(current)
 		if err != nil {
 			return nil, err
 		}
@@ -97,35 +101,8 @@ func (fs mirrorFileSystem) Open(name string) (http.File, error) {
 				return nil, os.ErrPermission
 			}
 		}
-		// Pin each directory before descending, then verify that the opened
-		// object is the one we checked. Lstat followed by a single OpenInRoot
-		// is insufficient: an in-root symlink to keys can replace a checked
-		// public path between those calls. Never read from an unchecked handle.
-		if last {
-			f, err := current.Open(part)
-			if err != nil {
-				return nil, os.ErrPermission
-			}
-			opened, err := f.Stat()
-			if err != nil || !os.SameFile(info, opened) {
-				_ = f.Close()
-				return nil, os.ErrPermission
-			}
-			return f, nil
-		}
-		next, err := current.OpenRoot(part)
-		if err != nil {
-			return nil, os.ErrPermission
-		}
-		opened, err := next.Stat(".")
-		if err != nil || !os.SameFile(info, opened) {
-			_ = next.Close()
-			return nil, os.ErrPermission
-		}
-		_ = current.Close()
-		current = next
 	}
-	return nil, os.ErrPermission
+	return directory.Open(relative)
 }
 
 func pathWithin(dir, file string) bool {

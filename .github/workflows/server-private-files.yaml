@@ -5,7 +5,9 @@ on:
     paths:
       - 'server/**'
       - 'pkg/repository/**'
-      - 'tests/security/server_private_files.py'
+      - 'tests/tiup-server/**'
+      - 'tests/Makefile'
+      - 'Makefile'
       - '.github/workflows/server-private-files.yaml'
       - 'go.mod'
       - 'go.sum'
@@ -16,6 +18,7 @@ permissions:
 jobs:
   server-private-files:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
         with:
@@ -25,9 +28,5 @@ jobs:
           go-version-file: go.mod
       - name: Server boundary and repository regressions
         run: go test -race ./server/... ./pkg/repository/...
-      - name: Build existing CLI and patched server
-        run: |
-          go build -o bin/tiup .
-          go build -o bin/tiup-server ./server
       - name: Existing layouts, signing and private HTTP denial
-        run: python3 tests/security/server_private_files.py bin/tiup bin/tiup-server
+        run: make test_server_private_files
