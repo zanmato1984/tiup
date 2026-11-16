@@ -32,7 +32,8 @@ jobs:
         run: make test_server_private_files
 
   unicode-alias:
-    runs-on: macos-latest
+    # macos-latest arm64 exhausted hosted capacity before this job could start.
+    runs-on: macos-26-intel
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v6
